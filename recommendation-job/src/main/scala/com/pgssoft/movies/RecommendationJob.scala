@@ -3,10 +3,9 @@ package com.pgssoft.movies
 import com.typesafe.config.Config
 import org.apache.log4j.{Level, Logger}
 import org.apache.spark.mllib.recommendation.MatrixFactorizationModel
-import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SQLContext
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.{SparkConf, SparkContext}
-import spark.jobserver.{SparkJob, SparkJobValid, SparkJobValidation, SparkSqlJob}
+import spark.jobserver.{SparkJob, SparkJobValid, SparkJobValidation}
 
 object RecommendationJob extends SparkJob {
 
@@ -14,26 +13,60 @@ object RecommendationJob extends SparkJob {
 
   def runJob(sc: SparkContext, config: Config): Any = {
 
-    val sql = new SQLContext(sc)
+    val ss = SparkSession.builder().master("local[*]").appName("CYGU").getOrCreate()
 
-    val myRating = sql.read.jdbc(null, null, null) // load myRating from database
+    val sqlOpts = Map(
+      "url" -> "jdbc:postgresql://10.10.34.177:5432/recommendation",
+      "dbtable" -> "review",
+      "user" -> "postgres",
+      "password" -> "password"
+    )
 
+    val moviesOpts = Map(
+      "url" -> "jdbc:postgresql://10.10.34.177:5432/recommendation",
+      "dbtable" -> "movies",
+      "user" -> "postgres",
+      "password" -> "password"
+    )
 
-    val model = MatrixFactorizationModel.load(sql.sparkContext, "bestmodel")
+    val reviewDF = ss
+      .read
+      .format("jdbc")
+      .options(options = sqlOpts)
+      .load
+
+    val moviesDF = ss
+      .read
+      .format("jdbc")
+      .options(options = moviesOpts)
+      .load
+
+    val myRating = reviewDF.where("user_id=118205").select("user_id", "movie_id", "rate").rdd
+    val movies = moviesDF.select("movie_id", "title").rdd.map(row => (row.getAs[Long](0).toInt, row.getString(1)))
+
+    val rats = myRating.map(row => (row.getAs[Long](0).toInt, row.getAs[Long](1).toInt, row.getAs[Float](2).toDouble))
+
+    val model = MatrixFactorizationModel.load(sc, "E:\\bestmodel")
     // read trained model from parquet file
-    val candidates = sql.read.jdbc(null, null, null).rdd // loading candidates
-    val movies = sql.read.jdbc(null, null, null).rdd //loading movies
-    val rdd: RDD[(Int, Int)] = candidates.map((1000, _))
 
-    val recommendations = model.predict(rdd)
+    val candidates = movies.keys.filter(rats.id != _)
+
+    println("Kandydaci %d".format(candidates.count()))
+
+    val rdd = candidates.map((1, _))
+
+    val recommendations = model
+      .predict(rdd)
       .collect()
       .sortBy(-_.rating)
       .take(50)
 
+    println("Liczba %d".format(recommendations.length))
+
     var i = 1
     println("Movies recommended for you:")
     recommendations.foreach { r =>
-      println("%2d".format(i) + ": " + movies(r.product) + " rating: " + r.rating)
+      println("%2d".format(i) + ": " + movies.id + " rating: " + r.rating)
       i += 1
     }
   }
