@@ -3,28 +3,33 @@ package com.pgssoft.movies
 import java.io.File
 
 import com.typesafe.config.Config
+import org.apache.spark.SparkContext
 import org.apache.spark.mllib.recommendation.{ALS, MatrixFactorizationModel, Rating}
 import org.apache.spark.rdd.RDD
-import org.apache.spark.sql.SQLContext
-import spark.jobserver.{SparkJobValid, SparkSqlJob}
+import spark.jobserver.{SparkJob, SparkJobInvalid, SparkJobValid, SparkJobValidation}
 
 import scala.io.Source
+import scala.util.Try
 
-object TrainingJob extends SparkSqlJob{
+object TrainingJob extends SparkJob {
 
-  override def runJob(sc: SQLContext,
-                      jobConfig: Config) = {
-    val ratings = sc.sparkContext.textFile(new File("C:\\dev\\movie-recomendation\\src\\main\\resources\\ratings.csv").toString).map { line =>
+
+  override def runJob(sc: SparkContext, config: Config): Any = {
+    val ratings = sc
+      .textFile(new File("ratings.csv")
+        .toString).map { line =>
       val fields = line.split(",")
       // format: (timestamp % 10, Rating(userId, movieId, rating))
       (fields(3).toLong % 10, Rating(fields(0).toInt, fields(1).toInt, fields(2).toDouble))
     }
 
-    val movies = sc.sparkContext.textFile(new File("C:\\dev\\movie-recomendation\\src\\main\\resources\\movies.csv").toString).map { line =>
-      val fields = line.split(",")
-      // format: (movieId, movieName)
-      (fields(0).toInt, fields(1))
-    }.collect().toMap
+    val movies = sc
+      .textFile(new File("movies.csv").toString)
+      .map { line =>
+        val fields = line.split(",")
+        // format: (movieId, movieName)
+        (fields(0).toInt, fields(1))
+      }.collect().toMap
 
     val numRatings = ratings.count()
     val numUsers = ratings.map(_._2.user).distinct().count()
@@ -93,12 +98,8 @@ object TrainingJob extends SparkSqlJob{
     println("The best model improves the baseline by " + "%1.2f".format(improvement) + "%.")
 
 
-    bestModel take 1
+    bestModel.get.save(sc, "bestmodel")
   }
-
-  override def validate(sc: SQLContext,
-                        config: Config) = SparkJobValid
-
 
   /** Compute RMSE (Root Mean Squared Error). */
   def computeRmse(model: MatrixFactorizationModel, data: RDD[Rating], n: Long): Double = {
@@ -107,6 +108,12 @@ object TrainingJob extends SparkSqlJob{
       .join(data.map(x => ((x.user, x.product), x.rating)))
       .values
     math.sqrt(predictionsAndRatings.map(x => (x._1 - x._2) * (x._1 - x._2)).reduce(_ + _) / n)
+  }
+
+  override def validate(sc: SparkContext, config: Config): SparkJobValidation = {
+    Try(config.getString("input.string"))
+      .map(x => SparkJobValid)
+      .getOrElse(SparkJobInvalid("No input.string config param"))
   }
 
   /** Load ratings from file. */
