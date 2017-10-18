@@ -2,12 +2,10 @@ package com.pgssoft.movies
 
 import com.typesafe.config.Config
 import org.apache.spark.SparkContext
-import org.apache.spark.mllib.recommendation.{ALS, MatrixFactorizationModel, Rating}
-import org.apache.spark.rdd.RDD
+import org.apache.spark.mllib.recommendation.{ALS, Rating}
 import org.apache.spark.sql.SparkSession
 import spark.jobserver.{SparkJob, SparkJobInvalid, SparkJobValid, SparkJobValidation}
 
-import scala.io.Source
 import scala.util.Try
 
 object TrainingJob extends SparkJob {
@@ -30,39 +28,16 @@ object TrainingJob extends SparkJob {
       .options(options = sqlOpts)
       .load
 
-    val rats = reviewDF.limit(50000).select("user_id", "movie_id", "rate").rdd
+    val rats = reviewDF.select("user_id", "movie_id", "rate").rdd
     val ratings = rats.map(row => Rating(row.getAs[Long](0).toInt, row.getAs[Long](1).toInt, row.getAs[Float](2).toDouble))
     val model = ALS.train(ratings, 12, 20, 0.1)
 
     model.save(sc, "E:\\bestmodel")
   }
 
-  /** Compute RMSE (Root Mean Squared Error). */
-  def computeRmse(model: MatrixFactorizationModel, data: RDD[Rating], n: Long): Double = {
-    val predictions: RDD[Rating] = model.predict(data.map(x => (x.user, x.product)))
-    val predictionsAndRatings = predictions.map(x => ((x.user, x.product), x.rating))
-      .join(data.map(x => ((x.user, x.product), x.rating)))
-      .values
-    math.sqrt(predictionsAndRatings.map(x => (x._1 - x._2) * (x._1 - x._2)).reduce(_ + _) / n)
-  }
-
   override def validate(sc: SparkContext, config: Config): SparkJobValidation = {
     Try(config.getString("input.string"))
-      .map(x => SparkJobValid)
+      .map(_ => SparkJobValid)
       .getOrElse(SparkJobInvalid("No input.string config param"))
-  }
-
-  /** Load ratings from file. */
-  def loadRatings(path: String): Seq[Rating] = {
-    val lines = Source.fromFile(path).getLines()
-    val ratings = lines.map { line =>
-      val fields = line.split(",")
-      Rating(fields(0).toInt, fields(1).toInt, fields(2).toDouble)
-    }.filter(_.rating > 0.0)
-    if (ratings.isEmpty) {
-      sys.error("No ratings provided.")
-    } else {
-      ratings.toSeq
-    }
   }
 }
